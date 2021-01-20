@@ -1,0 +1,1219 @@
+---
+title: "MTH4053 Final Project: Heart Failure Analysis"
+author: "Sean Lovullo"
+output: html_notebook
+---
+
+This project was done to fulfill the course requirements of the Advanced Applied Statistics course at Point Loma Nazarene University. The requirements for this final project are as follows:  
+
+1) Find data and form some questions you would like to answer using that data.  
+2) Decide which techniques you are going to use to answer your questions from part 1. For this
+project, you need to use two techniques found in 4.10, 4.11 (chapter 5) and two techniques from Chapter 6 & 7.  
+3) Be sure to discuss why you are using the techniques- i.e. plot data, give assumptions, etc.  
+4) Analyze and interpret your results- both the good and possibly bad.  
+5) Adjust your models- can they be made better? Why or why not?  
+
+---
+
+```{r include=FALSE}
+library(tidyverse)
+library(reticulate)
+library(mosaic)
+library(fastR2)
+library(maxLik)
+library(vcd)
+library(boot) 
+```
+
+### Preface    
+
+This document seeks to analyze clinical record data of heart failure patients to ask a variety of questions. It utilizes bootstrapping, hypothesis testing, two-way tables with chi-squared testing to look at categorical data, and simple and multiple logistic regression to answer a number of questions of this data set.  
+
+---
+
+### About the Data  
+
+Citation: Davide Chicco, Giuseppe Jurman: "Machine learning can predict survival of patients with heart failure from serum creatinine and ejection fraction alone". BMC Medical Informatics and Decision Making 20, 16 (2020).  
+
+**Abstract**: This dataset contains the medical records of 299 patients who had heart failure, collected during their follow-up period, where each patient profile has 13 clinical features.
+
+* Thirteen (13) clinical features:
+  - age: age of the patient (years)
+  - anaemia: decrease of red blood cells or hemoglobin (boolean)
+  - high blood pressure: if the patient has hypertension (boolean)
+  - creatinine phosphokinase (CPK): level of the CPK enzyme in the blood (mcg/L)
+  - diabetes: if the patient has diabetes (boolean)
+  - ejection fraction: percentage of blood leaving the heart at each contraction (percentage)
+  - platelets: platelets in the blood (kiloplatelets/mL)
+  - sex: woman or man (binary)
+  - serum creatinine: level of serum creatinine in the blood (mg/dL)
+  - serum sodium: level of serum sodium in the blood (mEq/L)
+  - smoking: if the patient smokes or not (boolean)
+  - time: follow-up period (days)
+  - [target] death event: if the patient deceased during the follow-up period (boolean)
+
+The above information was given on the UCI MLR webpage that held this data set. In addition to what is initially given, I will be utilizing the K-Means clustering algorithm from sci-kit learn package in Python to find clusters in the data with the hope of producing better models.  
+
+* The following feature is added to the data set:  
+  - Cluster - cluster based on age, ejection_fraction, serum_creatinine, and time   
+  
+---
+
+### Research Questions  
+
+##### Bootstrapping and Hypothesis Testing  
+* What is the population mean age of those who have suffered from heart failure? How about for those who have passed?  
+* Take the estimated mean age (referred to by the above question) for someone who has suffered from heart failure. Does the level of serum creatinine in the blood differ for those who are younger than that age then those who are that age and older? How about the level of serum sodium?  
+
+##### Two-Way tables and Chi-Squared Testing  
+* Is there a relationship between smoking and death from heart failure?  
+* Is there a relationship between gender and death from heart failure?  
+* Is there a relationship between cluster labels and death from heart failure?    
+
+##### Simple and Multiple Logistic Regression  
+* With what level of accuracy could we predict if someone is at risk of death from heart failure, providing early detection?  
+* What are the best predictors to use to predict this target?  
+
+---
+
+### Part 0: Data Preprocessing and Clustering  
+
+Before asking questions from the data set, the clusters specified above will be found, and the data will then be split into training and testing sets.  
+
+```
+# imports Python packages
+import numpy as np
+import pandas as pd
+from matplotlib import pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn import preprocessing
+from sklearn.cluster import KMeans
+```
+
+```{python}
+# imports Python packages
+import numpy as np
+import pandas as pd
+from matplotlib import pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn import preprocessing
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+```
+
+
+With the necessary packages loaded, the data will be imported into Python using the Pandas package.  
+
+```
+# imports data from csv and shows a random sample
+hf_data = pd.read_csv("heart_failure_data.csv")
+hf_data['ID'] = hf_data.index
+hf_data = hf_data[hf_data.columns[[13,0,1,2,3,4,5,6,7,8,9,10,11,12]]]
+hf_data.sample(10)
+```
+
+```{python}
+# imports data from csv
+hf_data = pd.read_csv("heart_failure_data.csv")
+# creates ID column and moves it to be the first column
+hf_data['ID'] = hf_data.index
+hf_data = hf_data[hf_data.columns[[13,0,1,2,3,4,5,6,7,8,9,10,11,12]]]
+# shows a random sample of size 10
+hf_data.sample(10)
+```
+What columns should we choose to form clusters? The strongest predictors for the logistic model (predicting probability of DEATH_EVENT) are chosen for clustering.
+
+```{r}
+hf_data <- py$hf_data %>%
+  mutate(
+    ID = as.integer(ID),
+    anaemia = as.factor(anaemia),
+    diabetes = as.factor(diabetes),
+    high_blood_pressure = as.factor(high_blood_pressure),
+    sex = as.factor(sex),
+    smoking = as.factor(smoking),
+    DEATH_EVENT = as.integer(DEATH_EVENT)
+  )
+```
+
+```{r}
+pairs(hf_data[c("age","ejection_fraction","serum_creatinine","time")], pch = 16)
+```
+
+
+To use K-Means on these variables, we will want to standardize them so that the results will not be adversely affected by the differences in range and standard deviation among variables. 
+
+```
+# Creates a data frame with standardized predictors, leaving ID and the target untouched
+hf_std = pd.DataFrame(preprocessing.scale(hf_data.iloc[:,1:len(hf_data.columns)-1]))
+hf_std.columns = list(hf_data.iloc[:,1:len(hf_data.columns)-1].columns)
+hf_std = pd.DataFrame(hf_data['ID']).join(hf_std)
+hf_std = hf_std.join(pd.DataFrame(hf_data['DEATH_EVENT']))
+hf_std.head(10)
+```
+
+```{python}
+# Creates a data frame with standardized predictors, leaving ID and the target untouched
+hf_std = pd.DataFrame(preprocessing.scale(hf_data.iloc[:,1:len(hf_data.columns)-1]))
+hf_std.columns = list(hf_data.iloc[:,1:len(hf_data.columns)-1].columns)
+hf_std = pd.DataFrame(hf_data['ID']).join(hf_std)
+hf_std = hf_std.join(pd.DataFrame(hf_data['DEATH_EVENT']))
+hf_std.head(10)
+```
+
+From this standardized table of predictors, it is now time to pick out the subset of columns that will be used in the K-Means algorithm. As previously stated, the variables will be age, ejection_fraction, serum_creatinine, and time. 
+
+```
+X0 = hf_std.loc[:,["age","ejection_fraction","serum_creatinine","time"]]
+X0.head(5)
+```
+
+```{python}
+X0 = hf_std.loc[:,["age","ejection_fraction","serum_creatinine","time"]]
+X0.head(5)
+```
+
+K-Means requires that we specify the number of clusters for the algorithm; it does not figure out how many clusters there are for us. How do we know what to set $k$ as to have an appropriate number of clusters? There are two values to look at to determine what a good value for $k$ would be, and they are the inertia and silhouette scores.  
+
+By comparing these for different values of $k$, we can determine which value of $k$ would be best to use. For inertia, lower is better; however, inertia will always decrease as $k$ increases. To find the best value for $k$, we want to pick $k$ such that there is little reward for increasing it. Having too many clusters will be detrimental, especially with only 299 records in the data set, so we want to pick a value for k that is sufficient and no larger than that. On the other hand, we want the highest possible silhouette score; the value for $k$ that corresponds to the highest score is the most promising.  
+
+Knowing how to interpret these values, we will generate these scores for different values of $k$ and plot them.  
+
+```
+#test K-means with different cluster sizes (1-8) to find the inertia and silhouette scores
+results1 = {}
+results2 = {}
+for k in range(1,8):
+  kmeans = KMeans(n_clusters=k)
+  kmeans.fit_predict(X0)
+  inertia = kmeans.inertia_
+  colName = str(k)
+  results1.update({colName: inertia})
+  
+  if (k > 1):
+    s_score = silhouette_score(X0, kmeans.labels_)
+    results2.update({colName: s_score})
+
+results1 = pd.DataFrame(
+    list(results1.items()),
+    columns = ['K','Inertia']
+)
+results2 = pd.DataFrame(
+    list(results2.items()),
+    columns = ['K', 'Silhouette Score']
+)
+```
+
+```{python include=FALSE}
+#test K-means with different cluster sizes (1-8) to find the inertia and silhouette scores
+results1 = {}
+results2 = {}
+for k in range(1,8):
+  kmeans = KMeans(n_clusters=k)
+  kmeans.fit_predict(X0)
+  inertia = kmeans.inertia_
+  colName = str(k)
+  results1.update({colName: inertia})
+  
+  if (k > 1):
+    s_score = silhouette_score(X0, kmeans.labels_)
+    results2.update({colName: s_score})
+
+results1 = pd.DataFrame(
+    list(results1.items()),
+    columns = ['K','Inertia']
+)
+results2 = pd.DataFrame(
+    list(results2.items()),
+    columns = ['K', 'Silhouette Score']
+)
+```
+
+
+
+
+```
+#graph inertia scores
+ax = plt.gca()
+results1.plot(x = 'K', y ='Inertia', kind = 'line', ax = ax)
+results1.plot(x = 'K', y = 'Inertia', kind = 'scatter', ax= ax)
+ax.get_legend().remove()
+plt.title("Inertia")
+#plt.show()
+```
+
+```{python}
+#graph inertia scores
+ax = plt.gca()
+results1.plot(x = 'K', y ='Inertia', kind = 'line', ax = ax)
+results1.plot(x = 'K', y = 'Inertia', kind = 'scatter', ax= ax)
+ax.get_legend().remove()
+plt.title("Inertia")
+#plt.show()
+```
+
+Looking at the inertia graph, it is difficult to tell exactly which $k$ to pick. The slope from 6 to 7 is nearly identical to the slope from 5 to 6, but the slop from 5 to 6 is noticeably different that the slope from 4 to 5. Thus, $k=5$ appears most promising. The silhouette score plot will be used to solidify this decision.  
+
+```
+#graph silhouette scores to pick the best num of clusters
+ax = plt.gca()
+results2.plot(x = 'K', y = 'Silhouette Score', kind = 'line', ax = ax)
+results2.plot(x = 'K', y = 'Silhouette Score', kind = 'scatter', ax = ax)
+ax.get_legend().remove()
+plt.title("Silhouette Score")
+#plt.show()
+```
+
+```{python}
+#graph silhouette scores to pick the best number of clusters
+ax = plt.gca()
+results2.plot(x = 'K', y = 'Silhouette Score', kind = 'line', ax = ax)
+results2.plot(x = 'K', y = 'Silhouette Score', kind = 'scatter', ax = ax)
+ax.get_legend().remove()
+plt.title("Silhouette Score")
+#plt.show()
+```
+
+The peak of this plot is clearly at $k=5$, which is the same value chosen when examining the inertia plot. Thus, $k=5$ will be used when running K-Means for this particular set of predictors.  
+
+
+```
+#run KMeans algorithm
+k = 5
+kmeans= KMeans(n_clusters = k)
+y_pred = kmeans.fit_predict(X0)
+
+pd.DataFrame(y_pred).head(10) #look at the labels
+```
+
+```{python}
+#run K-Means algorithm
+k = 5
+init_pos = np.array([
+  [-0.39920777, -0.22628899, -0.19140558,  1.10769691],
+  [-0.10355676,  1.56754145, -0.30795201, -0.27465822],
+  [-0.3533162 , -0.69228384, -0.09944956, -0.74558976],
+  [ 1.51162693,  0.16717782,  0.20793212, -0.49049889],
+  [ 0.16837532,  0.65592038,  5.44432922, -0.41420261]
+])
+kmeans= KMeans(n_clusters = k, init = init_pos, n_init = 1)
+y_pred = kmeans.fit_predict(X0)
+
+pd.DataFrame(y_pred).head(10) #look at the labels
+```
+Using hard-coded initial positions for the centriods in order to keep clustering results consistent across runs (so that the cluster labels would not change each run), the 5 clusters are determined and a column of cluster labels are outputted. Next, the labels will be joined to the main data frame, `hf_data`.  
+
+
+```{python include=FALSE}
+# centroids for KMeans
+centroids = kmeans.cluster_centers_
+pd.DataFrame(centroids, columns = X0.columns.values)
+```
+
+
+
+```
+temp = pd.DataFrame(y_pred)
+temp.columns = ['Cluster']
+hf_data = hf_data.join(temp)
+hf_data.head(10)
+```
+
+```{python}
+temp = pd.DataFrame(y_pred)
+temp.columns = ['Cluster']
+hf_data = hf_data.join(temp)
+hf_data.head(10)
+```
+
+To help visualize these clusters, a scatter plot of serum_creatinine and ejection_fraction is shown, where the color of each data point represents the cluster that it belongs to. Because ejection_fraction is an integer value, `geom_jitter` is used instead of a straightforward scatter plot, slightly displacing the data points so that points are less likely to be buried by others and so that more points can be seen, which is important to know where points for each cluster lie.  
+
+
+```{r}
+hf_data <- py$hf_data %>%
+  mutate(
+    ID = as.integer(ID),
+    anaemia = as.factor(anaemia),
+    diabetes = as.factor(diabetes),
+    high_blood_pressure = as.factor(high_blood_pressure),
+    sex = as.factor(sex),
+    smoking = as.factor(smoking),
+    Cluster = as.factor(Cluster),
+    DEATH_EVENT = as.integer(DEATH_EVENT)
+  )
+```
+
+```{r}
+# example visualization showing different clusters
+ggplot(data = hf_data, mapping = aes(x = serum_creatinine, y = ejection_fraction, color = Cluster)) +
+  geom_jitter()
+```
+
+Clustering that took place in a 5-dimensional space is being projected onto this 2D plane, which means that it is difficult to get an idea about the effectiveness of this clustering using 2D scatter plots. Later on when the logistic models are built, the "clustered" models will be compared to the "clusterless" model to see if these clusters help to better predict whether or not a patient may die from heart failure.  
+
+With the initial data preparation complete, let's turn towards the first set of questions.  
+
+---
+
+### Part I: Bootstrapping and Hypothesis Testing  
+#### Questions of Interest:  
+1) What is the population mean age of those who have suffered from heart failure? How about for those who have passed?  
+2) Take the estimated mean age (referred to by the above question) for someone who has suffered from heart failure. Does the level of serum creatinine in the blood differ for those who are younger than that age then those who are that age and older? How about the level of serum sodium?  
+
+---
+
+#### Question 1, Part 1:
+
+To get a confidence interval to answer what the population mean age is of heart failure patients, we will use bootstrapping. 5000 means of age are calculated using bootstrapping, shown below.  
+
+```{r}
+# gets 5000 means from random samples of age from the hf_data data set
+age.boot <- 
+  do(5000) * c(boot.mean = mean(~ age, data = resample(hf_data)))
+head(age.boot,5)
+```
+
+Since the distribution of the means is approximately normally distributed, a percentile confidence interval is appropriate. A 95% confidence interval is shown below, along with a histogram of the distribution and the normal distribution that best fits the histogram.  
+
+```{r}
+# Percentile Confidence Interval from Bootstrap
+quantile(age.boot$boot.mean, probs = c(0.025, 0.975))
+```
+
+
+```{r echo=FALSE}
+loglik.norm <- function(theta,x) {
+  mean <- theta[1]
+  sd <- theta[2]
+  if (sd < 0) return(NA)
+  sum(dnorm(x = x, mean = mean, sd = sd, log = TRUE))
+}
+
+# gets MLEs
+ml.norm <- 
+  maxLik(
+    logLik = loglik.norm, 
+    start = c(mean = 60, sd = 1), 
+    x = age.boot$boot.mean
+  )
+mean <- coef(ml.norm)[1]
+sd <- coef(ml.norm)[2]
+
+# Visualization of bootstrap histogram with normal distribution curve fit using MLE
+hist(
+  x = age.boot$boot.mean, 
+  probability = TRUE,
+  main = "Bootstrap Average of Age",
+  xlab = "Mean Age from Random Sample",
+  ylab = "Probability Density"
+)
+curve(dnorm(x, mean = mean, sd = sd), col = "red", add = TRUE)
+```
+
+
+* What is the population mean age of those who have suffered from heart failure?  
+
+Thus, the below CI describes the range in which the true population mean age lies, measured with 95% confidence, and the estimated value of the mean age lies below the CI.    
+```{r}
+# The distribution appears to have little to no skew, so the percentile confidence interval can be used
+quantile(age.boot$boot.mean, probs = c(0.025, 0.975))
+```
+```{r}
+mean(age.boot$boot.mean)
+```
+
+---
+
+#### Question 1, Part 2:  
+
+Essentially, we are asking the same question and using the same methods as before, but we are only look at the records where DEATH_EVENT is 1, or when a patient passed away. Thus, although the code running the necessary processes are shown, let us press on to see the results.
+
+```{r}
+hf_death <- hf_data %>% filter(DEATH_EVENT == 1)
+
+# gets 5000 means from random samples of age from the hf_train data set
+dAge.boot <- 
+  do(5000) * c(boot.mean = mean(~ age, data = resample(hf_death)))
+```
+
+```{r echo=FALSE}
+loglik.norm <- function(theta,x) {
+  mean <- theta[1]
+  sd <- theta[2]
+  if (sd < 0) return(NA)
+  sum(dnorm(x = x, mean = mean, sd = sd, log = TRUE))
+}
+
+# gets MLEs
+ml.norm <- 
+  maxLik(
+    logLik = loglik.norm, 
+    start = c(mean = 60, sd = 1), 
+    x = dAge.boot$boot.mean
+  )
+mean <- coef(ml.norm)[1]
+sd <- coef(ml.norm)[2]
+
+# Visualization of bootstrap histogram with normal distribution curve fit using MLE
+hist(
+  x = dAge.boot$boot.mean, 
+  probability = TRUE,
+  main = "Bootstrap Average of Age when DEATH_EVENT == 1",
+  xlab = "Mean Age from Random Sample",
+  ylab = "Probability Density"
+)
+curve(dnorm(x, mean = mean, sd = sd), col = "red", add = TRUE)
+```
+
+* What is the population mean age of those who have died due to heart failure?  
+
+A confidence interval for the population mean can be described by what follows:  
+```{r}
+# The distribution appears to have little to no skew, so the percentile confidence interval can be used
+quantile(dAge.boot$boot.mean, probs = c(0.025, 0.975))
+```
+
+And the estimated value for the population mean is:  
+```{r}
+mean(dAge.boot$boot.mean)
+```
+
+---
+
+#### Question 2, Part 1  
+
+For this question, we are trying to see if the levels of serum creatinine differ between those younger than 61 and those who are 61 or older. Let $\mu_1$ be the population mean of serum creatinine for those who are younger than 61. Let $\mu_2$ be the population mean of serum creatinine for those who are age 61 or older.
+
+* Hypothesis test
+  * $H_0: \mu_1 - \mu_2 = 0$  
+  * $H_A: \mu_1 - \mu_2 \neq 0$
+
+To see if the average levels differ, we must first split records intro two groups: one of those younger than 61, and those who are 61 or older.  
+
+```{r}
+hf_younger <- hf_data %>%
+  filter(age < 61)
+
+hf_older <- hf_data %>%
+  filter(age >= 61)
+```
+
+
+After that, we simulaneously get boot means of serum_creatinine for each filtered data set and store the information in a data frame. Then another column containing the difference between the two types of boot means is created.  
+
+```{r}
+# sc refers to serum creatinine
+# YmO refers to younger minus older, in reference to the subtraction of means
+scYmO.boot <- 
+  do(5000) * c(
+    scy.mean = mean(~ serum_creatinine, data = resample(hf_younger)),
+    sco.mean = mean(~ serum_creatinine, data = resample(hf_older))
+  )
+scYmO.boot <- scYmO.boot %>%
+  mutate(sc.YmO = scy.mean - sco.mean)
+head(scYmO.boot,5)
+```
+
+
+```{r echo=FALSE}
+loglik.norm <- function(theta,x) {
+  mean <- theta[1]
+  sd <- theta[2]
+  if (sd < 0) return(NA)
+  sum(dnorm(x = x, mean = mean, sd = sd, log = TRUE))
+}
+
+# gets MLEs
+ml.norm <- 
+  maxLik(
+    logLik = loglik.norm, 
+    start = c(mean = 0, sd = 1), 
+    x = scYmO.boot$sc.YmO
+  )
+mean <- coef(ml.norm)[1]
+sd <- coef(ml.norm)[2]
+
+# Visualization of bootstrap histogram with normal distribution curve fit using MLE
+hist(
+  x = scYmO.boot$sc.YmO, 
+  probability = TRUE,
+  main = "Bootstrap of Difference of Means",
+  xlab = "Bootstrapped Mean",
+  ylab = "Probability Density"
+)
+curve(dnorm(x, mean = mean, sd = sd), col = "red", add = TRUE)
+```
+
+Given the confidence interval that includes 0 below (that is also supported by the above visual), we cannot reject the null hypothesis $H_0$ which states that $\mu_1-\mu_2=0$.  
+
+
+```{r}
+# The distribution appears to have little to no skew, so the percentile confidence interval can be used 
+quantile(scYmO.boot$sc.YmO, probs = c(0.025,0.975))
+```
+
+Thus, we can conclude that there is no evidence that the levels of serum creatinine in people who are younger than 61 are different than that of people who are age 61 or older.  
+
+---
+
+#### Question 2, Part 2  
+
+This question is much like what was asked previously, but now it involves serum sodium instead of serum creatinine.
+
+Let $\mu_1$ be the population mean of serum sodium for those who are younger than 61. Let $\mu_2$ be the population mean of serum sodium for those who are age 61 or older.
+
+* Hypothesis test
+  * $H_0: \mu_1 - \mu_2 = 0$  
+  * $H_A: \mu_1 - \mu_2 \neq 0$
+
+
+```{r}
+ssYmO.boot <- 
+  do(5000) * c(
+    ssy.mean = mean(~ serum_sodium, data = resample(hf_younger)),
+    sso.mean = mean(~ serum_sodium, data = resample(hf_older))
+  )
+ssYmO.boot <- ssYmO.boot %>%
+  mutate(ss.YmO = ssy.mean - sso.mean)
+head(ssYmO.boot,5)
+```
+
+
+```{r echo=FALSE}
+loglik.norm <- function(theta,x) {
+  mean <- theta[1]
+  sd <- theta[2]
+  if (sd < 0) return(NA)
+  sum(dnorm(x = x, mean = mean, sd = sd, log = TRUE))
+}
+
+# gets MLEs
+ml.norm <- 
+  maxLik(
+    logLik = loglik.norm, 
+    start = c(mean = 0, sd = 1), 
+    x = ssYmO.boot$ss.YmO
+  )
+mean <- coef(ml.norm)[1]
+sd <- coef(ml.norm)[2]
+
+# Visualization of bootstrap histogram with normal distribution curve fit using MLE
+hist(
+  x = ssYmO.boot$ss.YmO, 
+  probability = TRUE,
+  main = "Bootstrap of Difference of Means",
+  xlab = "Bootstrapped Mean",
+  ylab = "Probability Density"
+)
+curve(dnorm(x, mean = mean, sd = sd), col = "red", add = TRUE)
+```
+
+```{r}
+# The distribution appears to have little to no skew, so the percentile confidence interval can be used 
+quantile(ssYmO.boot$ss.YmO, probs = c(0.025,0.975))
+```
+
+0 lies within the 95% confidence interval of $\mu_1-\mu_2$; therefore, we cannot reject $H_0$ which states that $\mu_1-\mu_2=0$.  
+
+Thus, we can conclude that there is no evidence that the levels of serum sodium in people who are younger than 61 are different than that of people who are age 61 or older.  
+
+---
+
+### Part II: Two-Way tables and Chi-Squared Testing  
+#### Questions of Interest:  
+ 
+1) Is there a relationship between smoking and death from heart failure?  
+2) Is there a relationship between gender and death from heart failure?  
+3) Is there a relationship between cluster labels and death from heart failure?  
+
+This data set is composed of the clinical records of 299 patients who had heart failure. As a result, it is impossible to test if there is a relationship between one of these categorical attribute and experiencing heart failure, as every record is from a person who had heart failure. However, the relationship being tested is if there is a relationship between a categorical attribute and dying from heart failure, given that a patient has already experienced it.  
+
+---
+
+#### Question 1  
+
+* Is there a relationship between smoking and death from heart failure?  
+
+```{r}
+Smoking_Tab <- tally(smoking ~ DEATH_EVENT, data = hf_data)
+Smoking_Tab
+```
+
+```{r}
+xchisq.test(Smoking_Tab)
+```
+
+The p-value from the test is close to 1, meaning that we have strong evidence that we should not reject the null hypothesis that these two categorical variables are independent of one another.  
+
+---
+
+#### Question 2  
+
+* Is there a relationship between gender and death from heart failure?  
+
+```{r}
+Gender_Tab <- tally(sex ~ DEATH_EVENT, data = hf_data)
+Gender_Tab
+```
+
+```{r}
+xchisq.test(Gender_Tab)
+```
+
+The p-value from the test is approximately 1, meaning that we have strong evidence that we should not reject the null hypothesis that these two categorical variables are independent of one another.    
+
+---
+
+
+#### Question 3  
+
+* Is there a relationship between cluster labels and death from heart failure?  
+
+```{r}
+Cluster_Tab <- tally(Cluster ~ DEATH_EVENT, data = hf_data)
+Cluster_Tab
+```
+
+
+```{r}
+xchisq.test(Cluster_Tab, simulate.p.value = TRUE)
+```
+
+Based on these results measured with 95% confidence, we can reject the null hypothesis and say that the cluster labels and DEATH_EVENT are not independent of each other, as the measured p-value is less than 0.05.
+
+---  
+
+### Part III: Simple and Multiple Logistic Regression  
+#### Questions of Interest:  
+1) With what level of accuracy could we predict if someone is at risk of death from heart failure, providing early detection?  
+2) What are the best predictors to use for this target? 
+
+---  
+
+#### Section 1: Model Building  
+
+To be able to successfully test a model with new data, the data will now be split into separate training and testing data sets.  
+
+```
+# train/test split done in Python
+hf_data = r.hf_data
+train, test = train_test_split(hf_data, test_size=0.2)
+```
+
+```{python}
+# train/test split done in Python
+hf_data = r.hf_data
+train, test = train_test_split(hf_data, test_size=0.2)
+```
+
+
+```{r}
+hf_train <- py$train %>% 
+  mutate(DEATH_EVENT = as.integer(DEATH_EVENT))
+hf_test <- py$test %>% 
+  mutate(DEATH_EVENT = as.integer(DEATH_EVENT))
+rownames(hf_train) <- NULL
+rownames(hf_test) <- NULL
+hf_train
+```
+
+The training data set is what will be used to build the logistic models. For now, serum creatinine will be used in a simple logistic regression model.  
+
+---
+
+### Section A: Simple Logistic Models  
+
+We will now build our first model using DEATH_EVENT as the target and serum_creatinine as the predictor.  
+
+```{r}
+logitS.base <- glm(
+  DEATH_EVENT ~ serum_creatinine,
+  data = hf_train, family = "binomial"
+)
+msummary(logitS.base)
+```
+The Akaike information criterion (AIC) is the performance metric used for the logistic model, and generally follow the idea that lower is better. It is calculated using the number of independent variables used to build the model and the maximum likelihood estimate of the model (how well the model reproduces the data).
+
+To better understand the results, below are two plots. The first has a normal scatter plot of DEATH_EVENT and serum_creatinine, while the second uses the `geom_jitter` object so that all of the previously buried data points can be clearly seen though slight random displacement.
+
+```{r}
+ggplot(data = hf_train, mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_point(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+
+
+```{r}
+ggplot(data = hf_train, mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_jitter(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+    width = 0.15,
+    height = 0.15
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+
+While the clusters are not perfect indicators, clusters 0 and 1 tend to have DEATH_EVENT = 0, while clusters 2 has DEATH_EVENT = 1 more often. Cluster 3 appears to be spread between the two categories somewhat evenly, and Cluster 4 seems to be full of outliers that are on the right of our plot. Let's remove those and try again.  
+
+```{r}
+ggplot(data = hf_train %>% filter(Cluster != 4), mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_jitter(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+    width = 0,
+    height = 0.20
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+
+Having another look at the results through this plot, it is not that clusters 2 and 3 are more likely to have DEATH_EVENT=1 than not, but that clusters 0 and 1 tend to have DEATH_EVENT=0 more likely than not. Thus, we see more of cluster 2 and 3 in the group DEATH_EVENT=1 because there is a lesser amount of data points from clusters 0 and 1.  
+
+Next, models will be constructed and plotted for each cluster.  
+
+```{r}
+logitS.c0 <- glm(
+  DEATH_EVENT ~ serum_creatinine,
+  data = hf_data %>% filter(Cluster == 0), family = "binomial"
+)
+msummary(logitS.c0)
+```
+
+```{r}
+ggplot(data = hf_train %>% filter(Cluster == 0), mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_jitter(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+    width = 0,
+    height = 0.15
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+```{r}
+hf_train %>% filter(Cluster == 0) %>%
+  group_by(DEATH_EVENT) %>%
+  summarize(counts = n())
+```
+
+As previously described, patients in this cluster are more likely to have DEATH_EVENT=0 than DEATH_EVENT=1, meaning that death from heart failure is less likely. Hence, then model that we see here has a visible maximum that is slightly over 0.5. All cases in which patients passed away were incorrectly predicted by the model, and one case where a patient did not pass away was incorrectly predicted as well.  
+
+
+
+```{r}
+logitS.c1 <- glm(
+  DEATH_EVENT ~ serum_creatinine,
+  data = hf_data %>% filter(Cluster == 1), family = "binomial"
+)
+msummary(logitS.c1)
+```
+
+```{r}
+ggplot(data = hf_train %>% filter(Cluster == 1), mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_jitter(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+    width = 0,
+    height = 0.15
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+
+```{r}
+hf_train %>% filter(Cluster == 1) %>%
+  group_by(DEATH_EVENT) %>%
+  summarize(counts = n())
+```
+
+Cluster 1's model shows a similar story to that of cluster 2; it appears more likely for patients in cluster 1 to have DEATH_EVENT=0 than DEATH_EVENT=1. However, unlike cluster 0, there are not so many records assigned to this cluster, meaning that there is less evidence to support this idea. Nevertheless, the visual maximum value seen in the model is only near 0.6, and is near the far right of the plot, meaning that the model predicts only patients with abnormally high levels of serum creatinine are at risk. All cases in which patients passed away were incorrectly predicted by the model, and one case where a patient did not pass away was incorrectly predicted as well.  
+
+
+
+```{r}
+logitS.c2 <- glm(
+  DEATH_EVENT ~ serum_creatinine,
+  data = hf_data %>% filter(Cluster == 2), family = "binomial"
+)
+msummary(logitS.c2)
+```
+
+```{r}
+ggplot(data = hf_train %>% filter(Cluster == 2), mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_jitter(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+    width = 0,
+    height = 0.15
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+
+```{r}
+hf_train %>% filter(Cluster == 2) %>%
+  group_by(DEATH_EVENT) %>%
+  summarize(counts = n())
+```
+
+Unlike the previous two clusters, cluster 2 has a nearly even split of patients records containing DEATH_EVENT=0 and DEATH_EVENT=1. Comparing to previous clusters, we can interpret that a patient in cluster 2 is more likely to be at risk than if that patient were in cluster 0 or 1. This time, the model results were better than before, but still not great, as there were many data points that would be incorrectly classified by the model.  
+
+
+```{r}
+logitS.c3 <- glm(
+  DEATH_EVENT ~ serum_creatinine,
+  data = hf_data %>% filter(Cluster == 3), family = "binomial"
+)
+msummary(logitS.c3)
+```
+
+```{r}
+ggplot(data = hf_train %>% filter(Cluster == 3), mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_jitter(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+    width = 0,
+    height = 0.15
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+
+```{r}
+hf_train %>% filter(Cluster == 3) %>%
+  group_by(DEATH_EVENT) %>%
+  summarize(counts = n())
+```
+
+The majority of cases were correctly classified by the model for this cluster, although the success rate is not impressive. For this cluster, the data points are split roughly 50/50 into each category of DEATH_EVENT, much like cluster 2. The cut-off point for the model is at approximately 1.5 mg/dL of serum creatinine in the blood, which is similar to cluster 2 but very different than clusters 0 and 1, which had cut-off points that were higher.  
+
+
+```{r}
+logitS.c4 <- glm(
+  DEATH_EVENT ~ serum_creatinine,
+  data = hf_data %>% filter(Cluster == 4), family = "binomial"
+)
+msummary(logitS.c4)
+```
+
+```{r}
+ggplot(data = hf_train %>% filter(Cluster == 4), mapping = aes(x=serum_creatinine, y=DEATH_EVENT)) + 
+  geom_jitter(
+    mapping = aes(x=serum_creatinine, y=DEATH_EVENT, color = Cluster), 
+    width = 0,
+    height = 0.15
+  ) + 
+  geom_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)
+```
+
+```{r}
+hf_train %>% filter(Cluster == 4) %>%
+  group_by(DEATH_EVENT) %>%
+  summarize(counts = n())
+```
+
+It appears that the K-Means algorithm set a cluster to contain a some of the outliers that did not fit into the other groups. As a result, there are very few data points in this cluster, and the model's results are unlikely to be accurate.  Not much can be safely interpreted from this plot.  
+
+
+The simple logistic models generally did not do a good job fitting the training data, although the clusters revealed interesting results. Next, we shall create a more complicated logistic regression model with the hope of improving model results.  
+
+---
+
+### Section B: Multiple Logistc Regression Models
+
+After tinkering with the predictors, age, ejection_fraction, serum_creatinine, and time appear to be the most significant predictors. First, we have the "clusterless" model results:  
+
+```{r}
+logitM.base <- glm(
+  DEATH_EVENT ~ age + ejection_fraction +
+    serum_creatinine + time,
+  data = hf_train, family = "binomial"
+)
+res.dev <- as.double(msummary(logitM.base)[4])
+null.dev <- as.double(msummary(logitM.base)[8])
+df.diff <- abs(as.double(msummary(logitM.base)[7]) - as.double(msummary(logitM.base)[9]))
+msummary(logitM.base)
+```
+
+Using the clusterless model as a baseline for comparison, here are the results for the clustered models:  
+
+
+```{r}
+logitM.c0 <- glm(
+  DEATH_EVENT ~ age + ejection_fraction +
+    serum_creatinine + time,
+  data = hf_train %>% filter(Cluster == 0), family = "binomial"
+)
+msummary(logitM.c0)
+```
+
+```{r}
+logitM.c1 <- glm(
+  DEATH_EVENT ~ age + ejection_fraction +
+    serum_creatinine + time,
+  data = hf_train %>% filter(Cluster == 1), family = "binomial",
+  maxit=100
+)
+msummary(logitM.c1)
+```
+
+```{r}
+logitM.c2 <- glm(
+  DEATH_EVENT ~ age + ejection_fraction +
+    serum_creatinine + time,
+  data = hf_train %>% filter(Cluster == 2), family = "binomial"
+)
+msummary(logitM.c2)
+```
+
+```{r}
+logitM.c3 <- glm(
+  DEATH_EVENT ~ age + ejection_fraction +
+    serum_creatinine + time,
+  data = hf_train %>% filter(Cluster == 3), family = "binomial"
+)
+msummary(logitM.c3)
+```
+
+```{r}
+logitM.c4 <- glm(
+  DEATH_EVENT ~ age + ejection_fraction +
+    serum_creatinine + time,
+  data = hf_train %>% filter(Cluster == 4), family = "binomial"
+)
+msummary(logitM.c4)
+```
+The 4th cluster has the strangest results here. One reason is that the model has 5 dimensions and 4-5 data points (depending on the particular run of the code), which results in these strange results. This model needs more data to be viable.  
+
+
+---
+
+### Section C: Model Testing
+
+#### Simple Models: Results  
+
+
+* No clustering:  
+```{r}
+data <- hf_test
+model <- logitS.base
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+---
+
+* Cluster 0:  
+```{r}
+data <- hf_test %>% filter(Cluster == 0)
+model <- logitS.c0
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+
+---
+
+
+* Cluster 1:  
+```{r}
+data <- hf_test %>% filter(Cluster == 1)
+model <- logitS.c1
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+
+---
+
+* Cluster 2:  
+```{r}
+data <- hf_test %>% filter(Cluster == 2)
+model <- logitS.c2
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+
+---
+
+
+* Cluster 3:  
+```{r}
+data <- hf_test %>% filter(Cluster == 3)
+model <- logitS.c3
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+---
+
+* Cluster 4:  
+```{r}
+data <- hf_test %>% filter(Cluster == 4)
+model <- logitS.c4
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+
+---
+
+#### Multiple Logistic Model Results  
+
+* No clustering:  
+```{r}
+data <- hf_test
+model <- logitM.base
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+---
+
+* Cluster 0:  
+```{r}
+data <- hf_test %>% filter(Cluster == 0)
+model <- logitM.c0
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+---
+
+* Cluster 1:  
+```{r}
+data <- hf_test %>% filter(Cluster == 1)
+model <- logitM.c1
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+---
+
+* Cluster 2:  
+```{r}
+data <- hf_test %>% filter(Cluster == 2)
+model <- logitM.c2
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+---
+
+
+* Cluster 3:  
+```{r}
+data <- hf_test %>% filter(Cluster == 3)
+model <- logitM.c3
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+
+---
+
+
+* Cluster 4:  
+```{r}
+data <- hf_test %>% filter(Cluster == 4)
+model <- logitM.c4
+pred <- tibble(
+  pDEATH_EVENT = round(predict.glm(model, newdata = data, type = "response"),0)
+) %>%
+  bind_cols(data["ID"])
+data <- data %>% left_join(pred, by = "ID")
+
+print(paste("",dim(data)[1],"total rows"))
+print(paste("",dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1],"incorrect classifications"))
+print(dim(data %>% filter(DEATH_EVENT != pDEATH_EVENT))[1]/dim(data)[1])
+```
+
+
+---
+
+### Section D: Modeling Conclusions  
+
+
+In conclusion, the clustered models had better results for specific clusters and worse results for others; however, the clusters themselves did show a relation to the target variable. Perhaps by using more sophisticated classification methods, it may be possible to attain better results to generate more accurate predictions.  
+
+
+
+
+
+
+
+
+
+
+
