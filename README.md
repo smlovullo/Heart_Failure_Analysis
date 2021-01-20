@@ -6,3 +6,5 @@ To view the project in its most presentable format, download the html file calle
 The file heart_failure_data.csv is the data used in this project.  
 
 The file MTH4053_Final_Project.Rmd is the raw code that can be seen using any basic text editor, such as Notepad (for Windows) or TextEdit (for MacOS)  
+
+The PDF Final Project_FA_2020.pdf is the directions given to each student for the course's final project.  
